@@ -152,9 +152,6 @@ const REEL_START_DELAY = 150;
 const AIR_CONTROL_STRENGTH = 0.06;   // Increased air control
 const MAX_AIR_SPEED = 1.2;          // Speed cap for better control
 
-// Add after the physics constants
-const COLLISION_CHECK_RADIUS = 1.0; // Radius around player to check for collisions
-
 let cameraRotation = {
     horizontal: 0,
     vertical: 0
@@ -185,17 +182,21 @@ const keys = {
     a: false,
     s: false,
     d: false,
-    space: false
+    space: false,
+    shift: false  // Add shift for jumping
 };
 
 // Input handling
 window.addEventListener('keydown', (e) => {
+    if (isChatting) return;
+    
     switch(e.key.toLowerCase()) {
         case 'w': keys.w = true; break;
         case 'a': keys.a = true; break;
         case 's': keys.s = true; break;
         case 'd': keys.d = true; break;
         case ' ': keys.space = true; break;
+        case 'shift': keys.shift = true; break;
         case 'escape':
             if (document.pointerLockElement === renderer.domElement) {
                 document.exitPointerLock();
@@ -248,60 +249,6 @@ function updateRope() {
     }
 }
 
-// Add this new function before updateGrapplePhysics
-function checkBuildingCollisions() {
-    const playerPos = player.position.clone();
-    const nextPos = playerPos.clone().add(playerState.velocity);
-    
-    // Check for collisions with buildings and their decorations
-    for (const object of grappleObjects) {
-        const box = new THREE.Box3().setFromObject(object);
-        
-        // Expand box slightly to account for player radius
-        box.min.subScalar(COLLISION_CHECK_RADIUS);
-        box.max.addScalar(COLLISION_CHECK_RADIUS);
-        
-        if (box.containsPoint(nextPos)) {
-            // Get the closest point on the box to the player
-            const closestPoint = nextPos.clone().clamp(box.min, box.max);
-            const penetration = nextPos.clone().sub(closestPoint);
-            
-            // Determine which face we hit (top, sides, bottom)
-            const eps = 0.1; // Small threshold for top/bottom detection
-            if (Math.abs(penetration.y) > eps && 
-                Math.abs(penetration.x) < Math.abs(penetration.y) && 
-                Math.abs(penetration.z) < Math.abs(penetration.y)) {
-                
-                if (penetration.y < 0) {
-                    // Hit the top - land on it
-                    playerState.velocity.y = 0;
-                    nextPos.y = box.max.y;
-                    playerState.isGrounded = true;
-                } else {
-                    // Hit the bottom - stop upward movement
-                    playerState.velocity.y = 0;
-                    nextPos.y = box.min.y;
-                }
-            } else {
-                // Hit the sides - slide along the wall
-                if (Math.abs(penetration.x) > Math.abs(penetration.z)) {
-                    playerState.velocity.x = 0;
-                    nextPos.x = closestPoint.x;
-                } else {
-                    playerState.velocity.z = 0;
-                    nextPos.z = closestPoint.z;
-                }
-            }
-            
-            // Update position after collision
-            player.position.copy(nextPos);
-            return true;
-        }
-    }
-    return false;
-}
-
-// Modify updateGrapplePhysics to include building collisions
 function updateGrapplePhysics() {
     if (!playerState.isGrappling) {
         // Normal gravity when not grappling
@@ -416,20 +363,15 @@ function updateGrapplePhysics() {
     // Apply air resistance
     playerState.velocity.multiplyScalar(AIR_RESISTANCE);
 
-    // Check for building collisions before updating position
-    const hadCollision = checkBuildingCollisions();
-    
-    if (!hadCollision) {
-        // Only update position if no collision occurred
-        player.position.add(playerState.velocity);
-    }
+    // Update position
+    player.position.add(playerState.velocity);
 
-    // Ground collision check (only if not on a building)
-    if (!hadCollision && player.position.y < GROUND_LEVEL) {
+    // Ground collision check
+    if (player.position.y < GROUND_LEVEL) {
         player.position.y = GROUND_LEVEL;
         playerState.velocity.y = 0;
         playerState.isGrounded = true;
-    } else if (!hadCollision) {
+    } else {
         playerState.isGrounded = false;
     }
 }
@@ -647,6 +589,10 @@ function setupMultiplayer() {
                     otherPlayers.delete(data.id);
                 }
                 break;
+
+            case 'chat':
+                addChatMessage(data.id, data.message);
+                break;
         }
     };
 
@@ -676,4 +622,147 @@ function addOtherPlayer(id, position) {
 setupMultiplayer();
 
 // Start animation
-animate();  
+animate();
+
+// Add after scene setup
+// Chat UI setup
+const chatContainer = document.createElement('div');
+chatContainer.style.cssText = `
+    position: fixed;
+    left: 20px;
+    top: 20px;
+    width: 350px;
+    z-index: 9999;
+    pointer-events: none;
+    background: rgba(0, 0, 0, 0.85);
+    padding: 12px;
+    border-radius: 8px;
+    border: 2px solid #00ff00;
+    box-shadow: 0 0 15px rgba(0, 255, 0, 0.5);
+`;
+document.body.appendChild(chatContainer);
+
+const chatMessages = document.createElement('div');
+chatMessages.style.cssText = `
+    color: #00ff00;
+    max-height: 300px;
+    overflow-y: auto;
+    font-family: 'Courier New', monospace;
+    opacity: 1;
+    display: flex;
+    flex-direction: column-reverse;
+    gap: 8px;
+    text-shadow: 0 0 5px rgba(0, 255, 0, 0.7);
+    font-weight: bold;
+    font-size: 16px;
+`;
+chatContainer.appendChild(chatMessages);
+
+const chatInput = document.createElement('input');
+chatInput.style.cssText = `
+    width: calc(100% - 16px);
+    padding: 8px;
+    border: 2px solid #00ff00;
+    border-radius: 4px;
+    background: rgba(0, 0, 0, 0.9);
+    color: #00ff00;
+    display: none;
+    pointer-events: auto;
+    font-size: 16px;
+    margin-top: 8px;
+    outline: none;
+    font-family: 'Courier New', monospace;
+    box-shadow: 0 0 10px rgba(0, 255, 0, 0.5);
+    font-weight: bold;
+`;
+chatInput.placeholder = "Press / to chat...";
+chatContainer.appendChild(chatInput);
+
+let isChatting = false;
+
+// Add chat message display function
+function addChatMessage(playerId, message) {
+    const messageElement = document.createElement('div');
+    messageElement.style.cssText = `
+        background: rgba(0, 0, 0, 0.9);
+        padding: 10px 14px;
+        margin: 0;
+        border-radius: 6px;
+        word-wrap: break-word;
+        animation: fadeIn 0.3s ease-in;
+        font-size: 16px;
+        text-shadow: 0 0 5px rgba(0, 255, 0, 0.7);
+        border: 1px solid rgba(0, 255, 0, 0.5);
+        box-shadow: 0 0 8px rgba(0, 255, 0, 0.3);
+    `;
+    
+    const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    
+    messageElement.innerHTML = `
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+            <span style="color: #00ff00; font-weight: bold;">Player ${playerId.slice(0, 4)}</span>
+            <span style="color: #00ff00; opacity: 0.7; font-size: 14px;">${time}</span>
+        </div>
+        <span style="color: #00ff00; display: block;">${message}</span>
+    `;
+    
+    // Insert new message at the beginning (top)
+    chatMessages.insertBefore(messageElement, chatMessages.firstChild);
+    
+    // Keep last 12 messages
+    while (chatMessages.children.length > 12) {
+        chatMessages.removeChild(chatMessages.lastChild);
+    }
+}
+
+// Update the CSS animations
+const style = document.createElement('style');
+style.textContent = `
+    @keyframes fadeIn {
+        from { opacity: 0; transform: translateY(-5px); }
+        to { opacity: 1; transform: translateY(0); }
+    }
+`;
+document.head.appendChild(style);
+
+// Update chat input handling
+window.addEventListener('keydown', (e) => {
+    if (e.key === '/' && !isChatting) {
+        e.preventDefault();
+        isChatting = true;
+        chatInput.style.display = 'block';
+        chatInput.value = '';  // Clear any previous input
+        chatInput.focus();
+        
+        // Disable game controls while chatting
+        document.exitPointerLock();
+    } else if (e.key === 'Escape' && isChatting) {
+        isChatting = false;
+        chatInput.style.display = 'none';
+        chatInput.value = '';
+    }
+});
+
+chatInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && chatInput.value.trim() !== '') {
+        const message = chatInput.value.trim();
+        
+        // Send chat message
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({
+                type: 'chat',
+                id: playerId,
+                message: message
+            }));
+            
+            // Add message locally immediately
+            addChatMessage(playerId, message);
+        }
+        
+        // Clear input and return to game
+        chatInput.value = '';
+        isChatting = false;
+        chatInput.style.display = 'none';
+        renderer.domElement.requestPointerLock();
+    }
+});  

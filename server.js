@@ -36,68 +36,85 @@ const wss = new WebSocket.Server({ server });
 // Store connected players
 const players = new Map();
 
+// Generate unique ID for players
+function generateId() {
+    return Math.random().toString(36).substr(2, 9);
+}
+
+// Broadcast to all clients except sender
+function broadcast(ws, data) {
+    wss.clients.forEach(client => {
+        if (client !== ws && client.readyState === WebSocket.OPEN) {
+            client.send(JSON.stringify(data));
+        }
+    });
+}
+
 wss.on('connection', (ws) => {
-    // Assign unique ID to new player
-    const playerId = Date.now().toString();
-    players.set(playerId, { ws, position: { x: 0, y: 2, z: 0 }, velocity: { x: 0, y: 0, z: 0 } });
-    
-    console.log(`Player ${playerId} connected`);
-    
-    // Send player their ID
+    const playerId = generateId();
+    players.set(ws, { id: playerId, position: { x: 0, y: 2, z: 0 } });
+
+    // Send initial data to new player
     ws.send(JSON.stringify({
         type: 'init',
         id: playerId,
-        players: Array.from(players.entries()).map(([id, data]) => ({
-            id,
-            position: data.position,
-            velocity: data.velocity
-        })).filter(p => p.id !== playerId)
+        players: Array.from(players.values())
     }));
 
     // Broadcast new player to others
-    broadcast({
+    broadcast(ws, {
         type: 'playerJoined',
         id: playerId,
-        position: players.get(playerId).position
-    }, playerId);
+        position: { x: 0, y: 2, z: 0 }
+    });
 
     ws.on('message', (message) => {
-        const data = JSON.parse(message);
-        
-        switch(data.type) {
-            case 'position':
-                // Update player position and broadcast to others
-                if (players.has(data.id)) {
-                    players.get(data.id).position = data.position;
-                    players.get(data.id).velocity = data.velocity;
-                    broadcast({
-                        type: 'playerMoved',
-                        id: data.id,
-                        position: data.position,
-                        velocity: data.velocity,
-                        isGrappling: data.isGrappling,
-                        grapplePoint: data.grapplePoint
-                    }, data.id);
-                }
-                break;
+        try {
+            const data = JSON.parse(message);
+            
+            switch(data.type) {
+                case 'position':
+                    // Update player position and broadcast to others
+                    if (players.has(ws)) {
+                        players.get(ws).position = data.position;
+                        broadcast(ws, {
+                            type: 'playerMoved',
+                            id: playerId,
+                            position: data.position,
+                            velocity: data.velocity,
+                            isGrappling: data.isGrappling,
+                            grapplePoint: data.grapplePoint
+                        });
+                    }
+                    break;
+
+                case 'chat':
+                    // Broadcast chat message to all clients (including sender)
+                    wss.clients.forEach(client => {
+                        if (client.readyState === WebSocket.OPEN) {
+                            client.send(JSON.stringify({
+                                type: 'chat',
+                                id: playerId,
+                                message: data.message
+                            }));
+                        }
+                    });
+                    break;
+            }
+        } catch (error) {
+            console.error('Error processing message:', error);
         }
     });
 
     ws.on('close', () => {
-        console.log(`Player ${playerId} disconnected`);
-        players.delete(playerId);
-        broadcast({
-            type: 'playerLeft',
-            id: playerId
-        });
-    });
-});
-
-function broadcast(message, excludeId = null) {
-    const messageStr = JSON.stringify(message);
-    players.forEach((player, id) => {
-        if (id !== excludeId) {
-            player.ws.send(messageStr);
+        // Remove player and broadcast departure
+        if (players.has(ws)) {
+            const id = players.get(ws).id;
+            players.delete(ws);
+            broadcast(ws, {
+                type: 'playerLeft',
+                id: id
+            });
         }
     });
-} 
+}); 
