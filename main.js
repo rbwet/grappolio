@@ -55,9 +55,16 @@ const grappleObjects = [];
 
 // Function to create a building
 function createBuilding(x, z) {
-    const height = Math.random() * 30 + 20;
-    const width = Math.random() * 8 + 4;
-    const depth = Math.random() * 8 + 4;
+    // More varied height range (20-80 instead of 20-50)
+    const height = Math.random() * 60 + 20;
+    // Larger width and depth ranges
+    const width = Math.random() * 12 + 6;   // 6-18 instead of 4-12
+    const depth = Math.random() * 12 + 6;   // 6-18 instead of 4-12
+    
+    // Add random offset to position for less grid-like feel
+    const posOffset = SPACING * 0.3; // 30% of spacing for random offset
+    const xOffset = (Math.random() - 0.5) * posOffset;
+    const zOffset = (Math.random() - 0.5) * posOffset;
     
     // Main building
     const buildingGeometry = new THREE.BoxGeometry(width, height, depth);
@@ -67,16 +74,16 @@ function createBuilding(x, z) {
         roughness: 0.8
     });
     const building = new THREE.Mesh(buildingGeometry, buildingMaterial);
-    building.position.set(x, height/2, z);
+    building.position.set(x + xOffset, height/2, z + zOffset);
     scene.add(building);
-    grappleObjects.push(building); // Add to grappleable objects
+    grappleObjects.push(building);
 
-    // Add decorative elements
-    const numDecorations = Math.floor(Math.random() * 3) + 1;
+    // Add decorative elements with more variation
+    const numDecorations = Math.floor(Math.random() * 4) + 2; // 2-5 decorations instead of 1-3
     for (let i = 0; i < numDecorations; i++) {
-        const decorHeight = Math.random() * 10 + 5;
-        const decorWidth = width * 0.3;
-        const decorDepth = depth * 0.3;
+        const decorHeight = Math.random() * 15 + 8;  // 8-23 instead of 5-15
+        const decorWidth = width * (Math.random() * 0.4 + 0.2);  // 20-60% of building width
+        const decorDepth = depth * (Math.random() * 0.4 + 0.2);  // 20-60% of building depth
         
         const decorGeometry = new THREE.BoxGeometry(decorWidth, decorHeight, decorDepth);
         const decorMaterial = new THREE.MeshStandardMaterial({
@@ -86,19 +93,21 @@ function createBuilding(x, z) {
         });
         
         const decoration = new THREE.Mesh(decorGeometry, decorMaterial);
-        const yPos = Math.random() * (height - decorHeight) + decorHeight/2;
-        const xOffset = (Math.random() - 0.5) * (width - decorWidth);
-        const zOffset = (Math.random() - 0.5) * (depth - decorDepth);
         
-        decoration.position.set(x + xOffset, yPos, z + zOffset);
+        // More varied decoration placement
+        const yPos = Math.random() * (height - decorHeight * 0.5);  // Allow decorations to stick out more
+        const xOffset = (Math.random() - 0.5) * (width - decorWidth * 0.5);
+        const zOffset = (Math.random() - 0.5) * (depth - decorDepth * 0.5);
+        
+        decoration.position.set(x + xOffset, yPos + decorHeight/2, z + zOffset);
         scene.add(decoration);
-        grappleObjects.push(decoration); // Add to grappleable objects
+        grappleObjects.push(decoration);
     }
 }
 
 // Generate buildings in a grid pattern
-const GRID_SIZE = 5; // 5x5 grid of buildings
-const SPACING = 15;  // 15 units between buildings
+const GRID_SIZE = 7; // Increased from 5 to 7 for more buildings
+const SPACING = 25;  // Increased from 15 to 25 for more spread
 const OFFSET = GRID_SIZE * SPACING / 2;
 
 for (let i = 0; i < GRID_SIZE; i++) {
@@ -126,17 +135,54 @@ camera.rotation.order = 'YXZ'; // This order works better for first-person contr
 // Movement and camera variables
 const MOVE_SPEED = 0.1;
 const MOUSE_SENSITIVITY = 0.002;
+const AIR_CONTROL = 0.08;
+const AIR_BRAKE = 0.92;
+const MOMENTUM_INFLUENCE = 0.7;
+const LATERAL_CONTROL_BOOST = 1.5;
+
+// Physics constants
+const GRAVITY = 0.025;
+const AIR_RESISTANCE = 0.992;        // Slightly less air resistance for better control
+const GRAPPLE_REEL_SPEED = 0.15;     // Reduced reel speed
+const MAX_GRAPPLE_DISTANCE = 50;
+const GROUND_LEVEL = 2;
+const TAP_BOOST_FORCE = 0.3;         // Reduced initial boost
+const TAP_UPWARD_BOOST = 0.25;       // Reduced upward boost
+const REEL_START_DELAY = 150;
+const AIR_CONTROL_STRENGTH = 0.06;   // Increased air control
+const MAX_AIR_SPEED = 1.2;          // Speed cap for better control
 
 let cameraRotation = {
     horizontal: 0,
     vertical: 0
 };
 
+// Add grapple state to player
+const playerState = {
+    velocity: new THREE.Vector3(),
+    isGrappling: false,
+    grapplePoint: null,
+    ropeLength: 0,
+    isGrounded: false,
+    grappleStartTime: 0,    // Track when grapple started
+    isReeling: false        // Whether we're actively reeling in
+};
+
+// Create grapple rope line
+const ropeGeometry = new THREE.CylinderGeometry(0.05, 0.05, 1);
+ropeGeometry.rotateX(Math.PI / 2);
+const ropeMaterial = new THREE.MeshStandardMaterial({ color: 0x888888 });
+const rope = new THREE.Mesh(ropeGeometry, ropeMaterial);
+rope.visible = false;
+scene.add(rope);
+
+// Add space key to input handling
 const keys = {
     w: false,
     a: false,
     s: false,
-    d: false
+    d: false,
+    space: false
 };
 
 // Input handling
@@ -146,6 +192,7 @@ window.addEventListener('keydown', (e) => {
         case 'a': keys.a = true; break;
         case 's': keys.s = true; break;
         case 'd': keys.d = true; break;
+        case ' ': keys.space = true; break;
         case 'escape':
             if (document.pointerLockElement === renderer.domElement) {
                 document.exitPointerLock();
@@ -160,6 +207,7 @@ window.addEventListener('keyup', (e) => {
         case 'a': keys.a = false; break;
         case 's': keys.s = false; break;
         case 'd': keys.d = false; break;
+        case ' ': keys.space = false; break;
     }
 });
 
@@ -184,36 +232,227 @@ function onMouseMove(event) {
     }
 }
 
-function updatePlayer() {
-    // Movement
-    const moveDirection = new THREE.Vector3();
-    if (keys.w) moveDirection.z -= 1;
-    if (keys.s) moveDirection.z += 1;
-    if (keys.a) moveDirection.x += 1;
-    if (keys.d) moveDirection.x -= 1;
-    moveDirection.normalize();
+function updateRope() {
+    if (playerState.isGrappling) {
+        const toGrapple = playerState.grapplePoint.clone().sub(player.position);
+        const distance = toGrapple.length();
+        
+        // Update rope visual
+        rope.scale.z = distance;
+        rope.position.copy(player.position);
+        rope.lookAt(playerState.grapplePoint);
+        rope.position.add(toGrapple.multiplyScalar(0.5));
+    }
+}
 
-    // Transform movement direction based on camera angle
-    if (moveDirection.length() > 0) {
-        const cameraDirection = new THREE.Vector3(0, 0, -1);
-        cameraDirection.applyAxisAngle(new THREE.Vector3(0, 1, 0), cameraRotation.horizontal);
-        cameraDirection.y = 0;
-        cameraDirection.normalize();
-        
-        const right = new THREE.Vector3();
-        right.crossVectors(new THREE.Vector3(0, 1, 0), cameraDirection).normalize();
-        
-        const rotatedDirection = new THREE.Vector3();
-        rotatedDirection.addScaledVector(cameraDirection, -moveDirection.z);
-        rotatedDirection.addScaledVector(right, moveDirection.x);
-        rotatedDirection.normalize();
-        
-        // Apply movement
-        player.position.x += rotatedDirection.x * MOVE_SPEED;
-        player.position.z += rotatedDirection.z * MOVE_SPEED;
+function updateGrapplePhysics() {
+    if (!playerState.isGrappling) {
+        // Normal gravity when not grappling
+        if (!playerState.isGrounded) {
+            playerState.velocity.y -= GRAVITY;
+            
+            // Enhanced air control
+            if (keys.w || keys.s || keys.a || keys.d) {
+                const moveDirection = new THREE.Vector3();
+                if (keys.w) moveDirection.z -= 1;
+                if (keys.s) moveDirection.z += 1;
+                if (keys.a) moveDirection.x += 1;
+                if (keys.d) moveDirection.x -= 1;
+                moveDirection.normalize();
+
+                // Convert to world space
+                const cameraDirection = new THREE.Vector3(0, 0, -1);
+                cameraDirection.applyAxisAngle(new THREE.Vector3(0, 1, 0), cameraRotation.horizontal);
+                cameraDirection.y = 0;
+                cameraDirection.normalize();
+                
+                const right = new THREE.Vector3();
+                right.crossVectors(new THREE.Vector3(0, 1, 0), cameraDirection).normalize();
+                
+                const worldMoveDir = new THREE.Vector3();
+                worldMoveDir.addScaledVector(cameraDirection, -moveDirection.z);
+                worldMoveDir.addScaledVector(right, moveDirection.x);
+                worldMoveDir.normalize();
+
+                // More responsive air control that preserves momentum
+                const currentHorizontalSpeed = new THREE.Vector2(playerState.velocity.x, playerState.velocity.z).length();
+                const controlForce = AIR_CONTROL_STRENGTH * (1 + (MAX_AIR_SPEED - currentHorizontalSpeed) * 0.5);
+                
+                playerState.velocity.x += worldMoveDir.x * controlForce;
+                playerState.velocity.z += worldMoveDir.z * controlForce;
+
+                // Cap horizontal speed
+                const horizontalVelocity = new THREE.Vector2(playerState.velocity.x, playerState.velocity.z);
+                if (horizontalVelocity.length() > MAX_AIR_SPEED) {
+                    horizontalVelocity.normalize().multiplyScalar(MAX_AIR_SPEED);
+                    playerState.velocity.x = horizontalVelocity.x;
+                    playerState.velocity.z = horizontalVelocity.y;
+                }
+            }
+        }
+    } else {
+        // Spear-like grappling physics
+        const toGrapple = playerState.grapplePoint.clone().sub(player.position);
+        const distance = toGrapple.length();
+        const grappleDir = toGrapple.normalize();
+
+        // More gravity influence while grappling
+        playerState.velocity.y -= GRAVITY * 0.85;
+
+        if (keys.space && Date.now() - playerState.grappleStartTime > REEL_START_DELAY) {
+            // Holding space - smoother reel in towards point
+            playerState.isReeling = true;
+            
+            // More gradual acceleration when reeling
+            const reelStrength = Math.min((distance - 5) * 0.01, GRAPPLE_REEL_SPEED);
+            const reelForce = grappleDir.multiplyScalar(reelStrength);
+            playerState.velocity.add(reelForce);
+
+            // Gentler rope tension
+            if (distance > playerState.ropeLength) {
+                const tensionForce = Math.min((distance - playerState.ropeLength) * 0.03, 0.1);
+                playerState.velocity.add(grappleDir.multiplyScalar(tensionForce));
+            }
+        } else if (!playerState.isReeling) {
+            // Just the initial tap boost - very light rope tension
+            if (distance > playerState.ropeLength) {
+                const tensionForce = Math.min((distance - playerState.ropeLength) * 0.015, 0.06);
+                playerState.velocity.add(grappleDir.multiplyScalar(tensionForce));
+            }
+        }
+
+        // Enhanced mid-air control while grappling
+        if (keys.w || keys.s || keys.a || keys.d) {
+            const moveDirection = new THREE.Vector3();
+            if (keys.w) moveDirection.z -= 1;
+            if (keys.s) moveDirection.z += 1;
+            if (keys.a) moveDirection.x += 1;
+            if (keys.d) moveDirection.x -= 1;
+            moveDirection.normalize();
+
+            // Convert to world space
+            const cameraDirection = new THREE.Vector3(0, 0, -1);
+            cameraDirection.applyAxisAngle(new THREE.Vector3(0, 1, 0), cameraRotation.horizontal);
+            cameraDirection.y = 0;
+            cameraDirection.normalize();
+            
+            const right = new THREE.Vector3();
+            right.crossVectors(new THREE.Vector3(0, 1, 0), cameraDirection).normalize();
+            
+            const worldMoveDir = new THREE.Vector3();
+            worldMoveDir.addScaledVector(cameraDirection, -moveDirection.z);
+            worldMoveDir.addScaledVector(right, moveDirection.x);
+            worldMoveDir.normalize();
+
+            // Apply air control while grappling
+            playerState.velocity.x += worldMoveDir.x * AIR_CONTROL_STRENGTH * 0.7;
+            playerState.velocity.z += worldMoveDir.z * AIR_CONTROL_STRENGTH * 0.7;
+        }
+
+        // Smoother speed limiting
+        const speed = playerState.velocity.length();
+        if (speed > MAX_AIR_SPEED) {
+            playerState.velocity.multiplyScalar(1 - (speed - MAX_AIR_SPEED) * 0.1);
+        }
     }
 
-    // Update camera position and rotation
+    // Apply air resistance
+    playerState.velocity.multiplyScalar(AIR_RESISTANCE);
+
+    // Update position
+    player.position.add(playerState.velocity);
+
+    // Ground collision check
+    if (player.position.y < GROUND_LEVEL) {
+        player.position.y = GROUND_LEVEL;
+        playerState.velocity.y = 0;
+        playerState.isGrounded = true;
+    } else {
+        playerState.isGrounded = false;
+    }
+}
+
+// Update the updatePlayer function
+function updatePlayer() {
+    // Ground movement (when not grappling)
+    if (!playerState.isGrappling) {
+        const moveDirection = new THREE.Vector3();
+        if (keys.w) moveDirection.z -= 1;
+        if (keys.s) moveDirection.z += 1;
+        if (keys.a) moveDirection.x += 1;
+        if (keys.d) moveDirection.x -= 1;
+        moveDirection.normalize();
+
+        if (moveDirection.length() > 0) {
+            const cameraDirection = new THREE.Vector3(0, 0, -1);
+            cameraDirection.applyAxisAngle(new THREE.Vector3(0, 1, 0), cameraRotation.horizontal);
+            cameraDirection.y = 0;
+            cameraDirection.normalize();
+            
+            const right = new THREE.Vector3();
+            right.crossVectors(new THREE.Vector3(0, 1, 0), cameraDirection).normalize();
+            
+            const rotatedDirection = new THREE.Vector3();
+            rotatedDirection.addScaledVector(cameraDirection, -moveDirection.z);
+            rotatedDirection.addScaledVector(right, moveDirection.x);
+            rotatedDirection.normalize();
+            
+            // Only apply horizontal movement when grounded
+            if (playerState.isGrounded) {
+                playerState.velocity.x = rotatedDirection.x * MOVE_SPEED;
+                playerState.velocity.z = rotatedDirection.z * MOVE_SPEED;
+            } else {
+                // Reduced air control
+                playerState.velocity.x += rotatedDirection.x * MOVE_SPEED * 0.1;
+                playerState.velocity.z += rotatedDirection.z * MOVE_SPEED * 0.1;
+            }
+        } else if (playerState.isGrounded) {
+            // Stop horizontal movement when grounded and not moving
+            playerState.velocity.x *= 0.8;
+            playerState.velocity.z *= 0.8;
+        }
+    }
+
+    // Grapple control
+    if (keys.space && !playerState.isGrappling && grappleTarget.visible) {
+        // Start grapple
+        playerState.isGrappling = true;
+        playerState.isReeling = false;
+        playerState.grapplePoint = grappleTarget.position.clone();
+        playerState.ropeLength = player.position.distanceTo(playerState.grapplePoint);
+        playerState.grappleStartTime = Date.now();
+        rope.visible = true;
+
+        // Smoother initial tap boost
+        const toGrapple = playerState.grapplePoint.clone().sub(player.position);
+        const grappleDir = toGrapple.normalize();
+        
+        // Add upward component to initial boost
+        const boostDir = new THREE.Vector3(
+            grappleDir.x * 0.8,  // Reduced horizontal influence
+            grappleDir.y + TAP_UPWARD_BOOST,
+            grappleDir.z * 0.8   // Reduced horizontal influence
+        ).normalize();
+        
+        // Preserve some existing momentum
+        const currentSpeed = playerState.velocity.length();
+        playerState.velocity.multiplyScalar(0.5);  // Maintain some existing momentum
+        playerState.velocity.add(boostDir.multiplyScalar(TAP_BOOST_FORCE + currentSpeed * 0.2));
+    } else if (!keys.space && playerState.isGrappling) {
+        // Release grapple
+        playerState.isGrappling = false;
+        playerState.isReeling = false;
+        rope.visible = false;
+        
+        // Smoother momentum preservation
+        playerState.velocity.multiplyScalar(1.05); // Gentler speed boost on release
+    }
+
+    // Update physics
+    updateGrapplePhysics();
+    updateRope();
+
+    // Update camera
     camera.position.copy(player.position);
     camera.rotation.y = cameraRotation.horizontal;
     camera.rotation.x = cameraRotation.vertical;
@@ -254,4 +493,4 @@ window.addEventListener('resize', () => {
 });
 
 // Start animation
-animate(); 
+animate();  
