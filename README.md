@@ -1,7 +1,6 @@
 # Grappolio
 
-A fast-paced, multiplayer grappling hook game where players swing through a vibrant cityscape using momentum-based physics. Built with Three.js, this game combines fluid movement mechanics with multiplayer interaction.
-
+Grappolio breaks new ground as a browser-based MMO where grappling hooks and physics drive the action. Navigate vast vertical landscapes alongside hundreds of other players, using momentum and split-second timing to chart your course. The game supports up to 1,000 simultaneous adventurers, creating a dynamic world where movement isn't just transportation—it's the core experience. Whether you're exploring for fun or competing against others, Grappolio offers something genuinely different: a web game where mastery of motion creates possibilities conventional MMOs never imagined.
 ## 🎮 Game Features
 
 ### Core Mechanics
