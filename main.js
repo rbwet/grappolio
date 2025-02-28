@@ -152,6 +152,9 @@ const REEL_START_DELAY = 150;
 const AIR_CONTROL_STRENGTH = 0.06;   // Increased air control
 const MAX_AIR_SPEED = 1.2;          // Speed cap for better control
 
+// Add after the physics constants
+const COLLISION_CHECK_RADIUS = 1.0; // Radius around player to check for collisions
+
 let cameraRotation = {
     horizontal: 0,
     vertical: 0
@@ -245,6 +248,60 @@ function updateRope() {
     }
 }
 
+// Add this new function before updateGrapplePhysics
+function checkBuildingCollisions() {
+    const playerPos = player.position.clone();
+    const nextPos = playerPos.clone().add(playerState.velocity);
+    
+    // Check for collisions with buildings and their decorations
+    for (const object of grappleObjects) {
+        const box = new THREE.Box3().setFromObject(object);
+        
+        // Expand box slightly to account for player radius
+        box.min.subScalar(COLLISION_CHECK_RADIUS);
+        box.max.addScalar(COLLISION_CHECK_RADIUS);
+        
+        if (box.containsPoint(nextPos)) {
+            // Get the closest point on the box to the player
+            const closestPoint = nextPos.clone().clamp(box.min, box.max);
+            const penetration = nextPos.clone().sub(closestPoint);
+            
+            // Determine which face we hit (top, sides, bottom)
+            const eps = 0.1; // Small threshold for top/bottom detection
+            if (Math.abs(penetration.y) > eps && 
+                Math.abs(penetration.x) < Math.abs(penetration.y) && 
+                Math.abs(penetration.z) < Math.abs(penetration.y)) {
+                
+                if (penetration.y < 0) {
+                    // Hit the top - land on it
+                    playerState.velocity.y = 0;
+                    nextPos.y = box.max.y;
+                    playerState.isGrounded = true;
+                } else {
+                    // Hit the bottom - stop upward movement
+                    playerState.velocity.y = 0;
+                    nextPos.y = box.min.y;
+                }
+            } else {
+                // Hit the sides - slide along the wall
+                if (Math.abs(penetration.x) > Math.abs(penetration.z)) {
+                    playerState.velocity.x = 0;
+                    nextPos.x = closestPoint.x;
+                } else {
+                    playerState.velocity.z = 0;
+                    nextPos.z = closestPoint.z;
+                }
+            }
+            
+            // Update position after collision
+            player.position.copy(nextPos);
+            return true;
+        }
+    }
+    return false;
+}
+
+// Modify updateGrapplePhysics to include building collisions
 function updateGrapplePhysics() {
     if (!playerState.isGrappling) {
         // Normal gravity when not grappling
@@ -359,15 +416,20 @@ function updateGrapplePhysics() {
     // Apply air resistance
     playerState.velocity.multiplyScalar(AIR_RESISTANCE);
 
-    // Update position
-    player.position.add(playerState.velocity);
+    // Check for building collisions before updating position
+    const hadCollision = checkBuildingCollisions();
+    
+    if (!hadCollision) {
+        // Only update position if no collision occurred
+        player.position.add(playerState.velocity);
+    }
 
-    // Ground collision check
-    if (player.position.y < GROUND_LEVEL) {
+    // Ground collision check (only if not on a building)
+    if (!hadCollision && player.position.y < GROUND_LEVEL) {
         player.position.y = GROUND_LEVEL;
         playerState.velocity.y = 0;
         playerState.isGrounded = true;
-    } else {
+    } else if (!hadCollision) {
         playerState.isGrounded = false;
     }
 }
@@ -456,6 +518,18 @@ function updatePlayer() {
     camera.position.copy(player.position);
     camera.rotation.y = cameraRotation.horizontal;
     camera.rotation.x = cameraRotation.vertical;
+
+    // Send position update to server
+    if (ws && ws.readyState === WebSocket.OPEN && playerId) {
+        ws.send(JSON.stringify({
+            type: 'position',
+            id: playerId,
+            position: player.position,
+            velocity: playerState.velocity,
+            isGrappling: playerState.isGrappling,
+            grapplePoint: playerState.isGrappling ? playerState.grapplePoint : null
+        }));
+    }
 }
 
 // Function to update grapple target position
@@ -491,6 +565,115 @@ window.addEventListener('resize', () => {
     camera.updateProjectionMatrix();
     renderer.setSize(window.innerWidth, window.innerHeight);
 });
+
+// Add after scene setup
+const otherPlayers = new Map();
+let playerId = null;
+let ws = null;
+
+// Create player mesh factory function
+function createPlayerMesh() {
+    const playerGeometry = new THREE.SphereGeometry(0.5, 32, 32);
+    const playerMaterial = new THREE.MeshStandardMaterial({ color: 0xff0000 });
+    return new THREE.Mesh(playerGeometry, playerMaterial);
+}
+
+// Create other player's rope
+function createRopeMesh() {
+    const ropeGeometry = new THREE.CylinderGeometry(0.05, 0.05, 1);
+    ropeGeometry.rotateX(Math.PI / 2);
+    const ropeMaterial = new THREE.MeshStandardMaterial({ color: 0x888888 });
+    return new THREE.Mesh(ropeGeometry, ropeMaterial);
+}
+
+// Setup WebSocket connection
+function setupMultiplayer() {
+    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${wsProtocol}//${window.location.hostname}:3000`;
+    ws = new WebSocket(wsUrl);
+
+    ws.onopen = () => {
+        console.log('Connected to server');
+    };
+
+    ws.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        
+        switch(data.type) {
+            case 'init':
+                playerId = data.id;
+                // Add existing players
+                data.players.forEach(playerData => {
+                    addOtherPlayer(playerData.id, playerData.position);
+                });
+                break;
+
+            case 'playerJoined':
+                if (data.id !== playerId) {
+                    addOtherPlayer(data.id, data.position);
+                }
+                break;
+
+            case 'playerMoved':
+                if (data.id !== playerId && otherPlayers.has(data.id)) {
+                    const otherPlayer = otherPlayers.get(data.id);
+                    otherPlayer.mesh.position.copy(data.position);
+                    otherPlayer.velocity.copy(data.velocity);
+                    
+                    // Update rope if player is grappling
+                    if (data.isGrappling && data.grapplePoint) {
+                        otherPlayer.rope.visible = true;
+                        const toGrapple = new THREE.Vector3(
+                            data.grapplePoint.x,
+                            data.grapplePoint.y,
+                            data.grapplePoint.z
+                        ).sub(otherPlayer.mesh.position);
+                        
+                        otherPlayer.rope.scale.z = toGrapple.length();
+                        otherPlayer.rope.position.copy(otherPlayer.mesh.position);
+                        otherPlayer.rope.lookAt(data.grapplePoint);
+                        otherPlayer.rope.position.add(toGrapple.multiplyScalar(0.5));
+                    } else {
+                        otherPlayer.rope.visible = false;
+                    }
+                }
+                break;
+
+            case 'playerLeft':
+                if (otherPlayers.has(data.id)) {
+                    const playerToRemove = otherPlayers.get(data.id);
+                    scene.remove(playerToRemove.mesh);
+                    scene.remove(playerToRemove.rope);
+                    otherPlayers.delete(data.id);
+                }
+                break;
+        }
+    };
+
+    ws.onclose = () => {
+        console.log('Disconnected from server');
+    };
+}
+
+function addOtherPlayer(id, position) {
+    const playerMesh = createPlayerMesh();
+    playerMesh.position.copy(position);
+    
+    const ropeMesh = createRopeMesh();
+    ropeMesh.visible = false;
+    
+    scene.add(playerMesh);
+    scene.add(ropeMesh);
+    
+    otherPlayers.set(id, {
+        mesh: playerMesh,
+        rope: ropeMesh,
+        velocity: new THREE.Vector3()
+    });
+}
+
+// Call setupMultiplayer after scene setup
+setupMultiplayer();
 
 // Start animation
 animate();  
